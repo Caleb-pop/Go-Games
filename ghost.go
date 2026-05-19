@@ -99,29 +99,48 @@ func (g *Ghost) move() {
 	}
 }
 
-func (g *Ghost) chaseMove() {
-	// In real game you'd have proper pathfinding (A*)
-	// Here we just move mostly towards player (demo)
-	if rand.Float32() < 0.7 {
-		// Bias toward player
-		if g.X < 15 {
-			g.X++
-		} // dummy logic
-	} else {
-		g.randomMove()
+// canEnter is true when (x, y) is a tile the ghost is allowed to occupy.
+// Scared ghosts no-clip through walls (panic teleport); every other state
+// respects the maze.
+func (g *Ghost) canEnter(x, y int) bool {
+	if g.State == Scared {
+		return x >= 0 && y >= 0 && x < mazeCols && y < mazeRows
 	}
+	return !isWall(x, y)
 }
 
-func (g *Ghost) randomMove() {
-	switch rand.Intn(4) {
-	case 0:
-		g.Y--
-	case 1:
-		g.Y++
-	case 2:
-		g.X--
-	case 3:
+func (g *Ghost) chaseMove() {
+	// Placeholder chase: bias rightward toward x=15. Future work: read player
+	// position from the engine and do real pathfinding.
+	if rand.Float32() < 0.7 && g.X < 15 && g.canEnter(g.X+1, g.Y) {
 		g.X++
+		return
+	}
+	g.randomMove()
+}
+
+// randomMove tries up to four random directions before giving up for this
+// tick, so a ghost cornered against walls doesn't freeze the moment its first
+// pick happens to be blocked.
+func (g *Ghost) randomMove() {
+	order := []int{0, 1, 2, 3}
+	rand.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
+	for _, d := range order {
+		nx, ny := g.X, g.Y
+		switch d {
+		case 0:
+			ny--
+		case 1:
+			ny++
+		case 2:
+			nx--
+		case 3:
+			nx++
+		}
+		if g.canEnter(nx, ny) {
+			g.X, g.Y = nx, ny
+			return
+		}
 	}
 }
 
