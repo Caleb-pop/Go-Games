@@ -1,7 +1,7 @@
 import './style.css';
 import { Application, Assets, Container, Graphics, Sprite, Text, TextStyle, Texture } from 'pixi.js';
 import { EventsOn } from '../wailsjs/runtime/runtime';
-import { ScareGhosts, ResetGhosts, SetPlayerPosition } from '../wailsjs/go/main/GameEngine';
+import { ScareGhosts, ResetGhosts, SetPlayerPosition, EatGhost } from '../wailsjs/go/main/GameEngine';
 
 import playerRightUrl from './assets/sprites/playerRight.png';
 import playerLeftUrl  from './assets/sprites/playerLeft.png';
@@ -83,6 +83,11 @@ type GhostUpdate = {
 // --- Score ---
 let score = 0;
 let lives = 3;
+let gameOver = false;
+
+// Player spawn — also used by respawn after losing a life.
+const PLAYER_SPAWN_X = 14;
+const PLAYER_SPAWN_Y = 23;
 
 async function main() {
     const app = new Application();
@@ -106,6 +111,15 @@ async function main() {
     livesText.x = COLS * TILE - 120;
     livesText.y = ROWS * TILE + 8;
     app.stage.addChild(livesText);
+
+    // GAME OVER overlay — hidden until lives reach zero.
+    const overStyle = new TextStyle({ fill: 0xff3333, fontSize: 48, fontFamily: 'monospace', fontWeight: 'bold' });
+    const overText  = new Text({ text: 'GAME OVER', style: overStyle });
+    overText.anchor.set(0.5);
+    overText.x = (COLS * TILE) / 2;
+    overText.y = (ROWS * TILE) / 2;
+    overText.visible = false;
+    app.stage.addChild(overText);
 
     // --- Maze ---
     drawMaze(app.stage);
@@ -140,9 +154,13 @@ async function main() {
     const ghostLayer = new Container();
     app.stage.addChild(ghostLayer);
 
+    // Latest position+state per ghost ID. Used both by the ghost-update handler
+    // (to render) and by the player stepper (to collision-check before moving).
+    const ghostPositions = new Map<string, { x: number; y: number; state: number }>();
+
     // --- Player ---
-    let playerX = 14;
-    let playerY = 23;
+    let playerX = PLAYER_SPAWN_X;
+    let playerY = PLAYER_SPAWN_Y;
     let facing  = 0; // radians: 0=right, π=left, π/2=down, -π/2=up
 
     const player = new Sprite(playerRightTex);
@@ -174,6 +192,7 @@ async function main() {
 
     window.addEventListener('keydown', (e) => {
         if (DIR_KEYS.has(e.key)) {
+            if (gameOver) return;
             e.preventDefault();
             const i = heldDirs.indexOf(e.key);
             if (i !== -1) heldDirs.splice(i, 1);
@@ -187,7 +206,45 @@ async function main() {
         if (i !== -1) heldDirs.splice(i, 1);
     });
 
+    // Check whether the player's current tile overlaps any ghost. Scared ghosts
+    // get eaten; normal ghosts cost a life. Eaten ghosts are harmless.
+    function checkCollision() {
+        if (gameOver) return;
+        for (const [id, g] of ghostPositions) {
+            if (g.x !== playerX || g.y !== playerY) continue;
+            if (g.state === 1) {
+                EatGhost(id);
+                score += 200;
+                scoreText.text = `SCORE  ${score}`;
+                // Optimistically mark locally so we don't re-eat on the next tick
+                // before Go's update arrives.
+                g.state = 2;
+            } else if (g.state === 0) {
+                loseLife();
+                return; // stop scanning — player teleported away
+            }
+        }
+    }
+
+    function loseLife() {
+        lives--;
+        livesText.text = `LIVES  ${lives}`;
+        if (lives <= 0) {
+            gameOver = true;
+            overText.visible = true;
+            return;
+        }
+        // Respawn at the starting tile. Ghosts keep their positions.
+        playerX = PLAYER_SPAWN_X;
+        playerY = PLAYER_SPAWN_Y;
+        facing  = 0;
+        updatePlayerFacing();
+        placeAtTile(player, playerX, playerY);
+        SetPlayerPosition(playerX, playerY);
+    }
+
     function step() {
+        if (gameOver) return;
         const dir = heldDirs[heldDirs.length - 1];
         if (!dir) return;
         let nx = playerX, ny = playerY;
@@ -211,6 +268,8 @@ async function main() {
             drawPellets(pelletLayer);
             if (isPowerPellet(nx, ny)) ScareGhosts();
         }
+
+        checkCollision();
     }
     setInterval(step, 150);
 
@@ -250,6 +309,9 @@ async function main() {
             nodes.sprite!.tint = u.State === 1 ? SCARED_COLOR : 0xffffff;
         }
         placeAtTile(nodes.current, u.X, u.Y);
+
+        ghostPositions.set(u.ID, { x: u.X, y: u.Y, state: u.State });
+        checkCollision();
     });
 }
 

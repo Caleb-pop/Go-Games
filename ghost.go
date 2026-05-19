@@ -133,5 +133,8 @@ func (g *Ghost) handleCommand(cmd GhostCommand) {
 	case "reset":
 		g.State = Normal
 		g.Speed = 100 * time.Millisecond
+	case "eat":
+		g.State = Eaten
+		g.Speed = 80 * time.Millisecond // faster when retreating as eyes
 	}
 }

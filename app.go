@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -11,16 +12,20 @@ import (
 // GameEngine is the Wails-bound type. It owns the ghost goroutines, the
 // channels that connect them to the game loop, and the loop itself. Ghost
 // updates are forwarded to the frontend as Wails runtime events.
+//
+// Each ghost has its own command channel so that broadcasts (scare, reset)
+// reach every ghost rather than being consumed by whichever goroutine wins
+// the race for a shared channel.
 type GameEngine struct {
 	ctx context.Context
 
-	updateCh  chan GhostUpdate
-	commandCh chan GhostCommand
+	updateCh chan GhostUpdate
 
-	mu     sync.RWMutex
-	pacX   int
-	pacY   int
-	ghosts map[string]*Ghost
+	mu        sync.RWMutex
+	pacX      int
+	pacY      int
+	ghosts    map[string]*Ghost
+	ghostCmds map[string]chan<- GhostCommand // send-end of each ghost's commandCh
 
 	cancel context.CancelFunc
 	loopWG sync.WaitGroup
@@ -29,8 +34,8 @@ type GameEngine struct {
 func NewGameEngine() *GameEngine {
 	return &GameEngine{
 		updateCh:  make(chan GhostUpdate, 32),
-		commandCh: make(chan GhostCommand, 32),
 		ghosts:    make(map[string]*Ghost),
+		ghostCmds: make(map[string]chan<- GhostCommand),
 		pacX:      14,
 		pacY:      17,
 	}
@@ -44,16 +49,28 @@ func (e *GameEngine) Startup(ctx context.Context) {
 	loopCtx, cancel := context.WithCancel(ctx)
 	e.cancel = cancel
 
-	spot := &Ghost{
-		ID:        "Spot",
-		X:         13,
-		Y:         11,
-		Speed:     150 * time.Millisecond,
-		updateCh:  e.updateCh,
-		commandCh: e.commandCh,
+	spawns := []struct {
+		ID   string
+		X, Y int
+	}{
+		{"Spot", 13, 11},
+		{"Tracker", 14, 11},
+		{"Shadow", 15, 11},
 	}
-	e.ghosts[spot.ID] = spot
-	go spot.Run(loopCtx)
+	for _, s := range spawns {
+		cmdCh := make(chan GhostCommand, 4)
+		g := &Ghost{
+			ID:        s.ID,
+			X:         s.X,
+			Y:         s.Y,
+			Speed:     150 * time.Millisecond,
+			updateCh:  e.updateCh,
+			commandCh: cmdCh,
+		}
+		e.ghosts[g.ID] = g
+		e.ghostCmds[g.ID] = cmdCh
+		go g.Run(loopCtx)
+	}
 
 	e.loopWG.Add(1)
 	go e.runLoop(loopCtx)
@@ -92,18 +109,44 @@ func (e *GameEngine) SetPlayerPosition(x, y int) {
 	e.mu.Unlock()
 }
 
-// ScareGhosts is called when the player eats a power pellet.
+// ScareGhosts is called when the player eats a power pellet. Unlike the
+// arcade rule where every ghost flees at once, here a single random ghost is
+// scared — distinct gameplay, distinct IP.
 func (e *GameEngine) ScareGhosts() {
+	ids := make([]string, 0, len(e.ghostCmds))
+	for id := range e.ghostCmds {
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	target := ids[rand.Intn(len(ids))]
 	select {
-	case e.commandCh <- GhostCommand{Type: "scare"}:
+	case e.ghostCmds[target] <- GhostCommand{Type: "scare"}:
 	default:
 	}
 }
 
-// ResetGhosts returns ghosts to normal state.
+// ResetGhosts returns every ghost to normal state. Used by the manual R key
+// and by anything else that needs to clear scared state across the board.
 func (e *GameEngine) ResetGhosts() {
+	for _, ch := range e.ghostCmds {
+		select {
+		case ch <- GhostCommand{Type: "reset"}:
+		default:
+		}
+	}
+}
+
+// EatGhost flips a single ghost to the Eaten state. Called by the frontend
+// when the player collides with a scared ghost. Unknown IDs are ignored.
+func (e *GameEngine) EatGhost(id string) {
+	ch, ok := e.ghostCmds[id]
+	if !ok {
+		return
+	}
 	select {
-	case e.commandCh <- GhostCommand{Type: "reset"}:
+	case ch <- GhostCommand{Type: "eat"}:
 	default:
 	}
 }
