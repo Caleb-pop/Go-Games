@@ -16,7 +16,7 @@ func main() {
 	engine := NewGameEngine()
 
 	err := wails.Run(&options.App{
-		Title:  "MunchenLepard",
+		Title:  "MunchenLeopard",
 		Width:  896,
 		Height: 992,
 		AssetServer: &assetserver.Options{

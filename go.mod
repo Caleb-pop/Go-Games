@@ -1,4 +1,4 @@
-module munchenlepard
+module munchenleopard
 
 go 1.23.0
 

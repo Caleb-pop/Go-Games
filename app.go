@@ -66,13 +66,10 @@ func (e *GameEngine) Shutdown(ctx context.Context) {
 	e.loopWG.Wait()
 }
 
-// runLoop fans ghost updates out to the frontend and periodically scares
-// Spot as a demo. Replace the timer with real game-state transitions later.
+// runLoop fans ghost updates out to the frontend. Scare transitions are
+// driven by player events (power-pellet pickup) via ScareGhosts, not on a timer.
 func (e *GameEngine) runLoop(ctx context.Context) {
 	defer e.loopWG.Done()
-
-	scareTimer := time.NewTicker(5 * time.Second)
-	defer scareTimer.Stop()
 
 	for {
 		select {
@@ -81,12 +78,6 @@ func (e *GameEngine) runLoop(ctx context.Context) {
 
 		case update := <-e.updateCh:
 			runtime.EventsEmit(e.ctx, "ghost:update", update)
-
-		case <-scareTimer.C:
-			select {
-			case e.commandCh <- GhostCommand{Type: "scare"}:
-			default:
-			}
 		}
 	}
 }

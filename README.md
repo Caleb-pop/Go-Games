@@ -1,4 +1,4 @@
-# MunchenLepard
+# MunchenLeopard
 
 A maze-chase game built with [Wails](https://wails.io/) (Go + WebView2) and
 [Pixi.js](https://pixijs.com/) on the frontend.
@@ -13,7 +13,7 @@ wails dev
 
 ## Build
 
-Produce a redistributable Windows binary at `build/bin/MunchenLepard.exe`:
+Produce a redistributable Windows binary at `build/bin/MunchenLeopard.exe`:
 
 ```
 wails build

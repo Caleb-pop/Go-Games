@@ -1,7 +1,13 @@
 import './style.css';
-import { Application, Container, Graphics, Text, TextStyle } from 'pixi.js';
+import { Application, Assets, Container, Graphics, Sprite, Text, TextStyle, Texture } from 'pixi.js';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { ScareGhosts, ResetGhosts, SetPlayerPosition } from '../wailsjs/go/main/GameEngine';
+
+import playerRightUrl from './assets/sprites/playerRight.png';
+import playerLeftUrl  from './assets/sprites/playerLeft.png';
+import goldCatUrl     from './assets/sprites/goldCat.png';
+import blueDragonUrl  from './assets/sprites/blueDragon.png';
+import blackCatsUrl   from './assets/sprites/blackCats.png';
 
 // --- Maze constants ---
 const TILE = 24;
@@ -64,13 +70,7 @@ function isWall(x: number, y: number): boolean {
     return MAZE[y][x] === 1;
 }
 
-const GHOST_COLORS: Record<string, number> = {
-    Spot:     0x0066b3, // Bayern blue
-    Tracker:  0xffffff, // white
-    Shadow:   0x2d7d2d, // forest green
-    Prowler:  0x8b4513, // saddle brown
-};
-const SCARED_COLOR  = 0x6a0dad; // deep purple — distinct from any base color
+const SCARED_COLOR = 0x6a0dad; // deep purple tint applied to crest sprites when scared
 
 type GhostUpdate = {
     ID: string;
@@ -115,31 +115,49 @@ async function main() {
     app.stage.addChild(pelletLayer);
     drawPellets(pelletLayer);
 
+    // --- Load sprite textures up-front so we have them ready for the first frame.
+    const [playerRightTex, playerLeftTex, goldCatTex, blueDragonTex, blackCatsTex] = await Promise.all([
+        Assets.load<Texture>(playerRightUrl),
+        Assets.load<Texture>(playerLeftUrl),
+        Assets.load<Texture>(goldCatUrl),
+        Assets.load<Texture>(blueDragonUrl),
+        Assets.load<Texture>(blackCatsUrl),
+    ]);
+    const ghostTextures: Record<string, Texture> = {
+        Spot:    goldCatTex,
+        Tracker: blueDragonTex,
+        Shadow:  blackCatsTex,
+    };
+
+    // Configure a sprite to render centered on its tile at TILE-1 px square.
+    function setupTileSprite(s: Sprite) {
+        s.anchor.set(0.5);
+        s.width  = TILE - 2;
+        s.height = TILE - 2;
+    }
+
     // --- Ghost layer ---
     const ghostLayer = new Container();
     app.stage.addChild(ghostLayer);
-    const ghostSprites = new Map<string, Graphics>();
 
     // --- Player ---
-    let playerX   = 14;
-    let playerY   = 23;
-    let mouthOpen = true;
-    let facing    = 0; // radians: 0=right, π=left, π/2=down, -π/2=up
+    let playerX = 14;
+    let playerY = 23;
+    let facing  = 0; // radians: 0=right, π=left, π/2=down, -π/2=up
 
-    const player = new Graphics();
+    const player = new Sprite(playerRightTex);
+    setupTileSprite(player);
     app.stage.addChild(player);
-    drawPlayer(player, mouthOpen, facing);
     placeAtTile(player, playerX, playerY);
     SetPlayerPosition(playerX, playerY);
 
-    // Mouth animation — throttle by counting ticks, not by clamping the renderer
-    let mouthTick = 0;
-    app.ticker.add(() => {
-        if (++mouthTick % 8 === 0) {
-            mouthOpen = !mouthOpen;
-            drawPlayer(player, mouthOpen, facing);
-        }
-    });
+    // Swap player texture by facing. Up uses the right-facing sprite, down uses
+    // the left-facing — only two facings were provided.
+    function updatePlayerFacing() {
+        const leftish = facing > Math.PI / 2 - 0.01 || facing < -Math.PI / 2 - 0.01;
+        player.texture = leftish ? playerLeftTex : playerRightTex;
+    }
+    updatePlayerFacing();
 
     // --- Keyboard ---
     // WebView2 sometimes loads without focus on the document body — grab it
@@ -162,7 +180,6 @@ async function main() {
             heldDirs.push(e.key);
             return;
         }
-        if (e.key === ' ')                 { ScareGhosts(); return; }
         if (e.key === 'r' || e.key === 'R'){ ResetGhosts(); return; }
     });
     window.addEventListener('keyup', (e) => {
@@ -183,6 +200,7 @@ async function main() {
         if (isWall(nx, ny)) return;
         playerX = nx;
         playerY = ny;
+        updatePlayerFacing();
         placeAtTile(player, playerX, playerY);
         SetPlayerPosition(playerX, playerY);
 
@@ -197,56 +215,45 @@ async function main() {
     setInterval(step, 150);
 
     // --- Ghost updates from Go ---
-    EventsOn('ghost:update', (u: GhostUpdate) => {
-        let sprite = ghostSprites.get(u.ID);
-        if (!sprite) {
-            sprite = new Graphics();
-            ghostLayer.addChild(sprite);
-            ghostSprites.set(u.ID, sprite);
-        }
-        const color = u.State === 1
-            ? SCARED_COLOR
-            : u.State === 2
-                ? 0x444444
-                : (GHOST_COLORS[u.ID] ?? 0xffffff);
+    // Eaten ghosts render as the drawn eye-pair (no sprite art for that state);
+    // any other state uses the heraldic crest sprite. We swap the displayed node
+    // when the state transitions, so we cache one of each per ghost ID.
+    type GhostNodes = { sprite?: Sprite; eaten: Graphics; current: Container };
 
-        drawGhost(sprite, color, u.State === 2);
-        placeAtTile(sprite, u.X, u.Y);
+    const ghostCache = new Map<string, GhostNodes>();
+
+    EventsOn('ghost:update', (u: GhostUpdate) => {
+        let nodes = ghostCache.get(u.ID);
+        if (!nodes) {
+            const eaten = new Graphics();
+            const tex = ghostTextures[u.ID];
+            const sprite = tex ? new Sprite(tex) : undefined;
+            if (sprite) setupTileSprite(sprite);
+            nodes = { sprite, eaten, current: sprite ?? eaten };
+            ghostLayer.addChild(nodes.current);
+            ghostCache.set(u.ID, nodes);
+        }
+
+        // Swap which node is on-stage based on state.
+        const wantEaten = u.State === 2 || !nodes.sprite;
+        const desired = wantEaten ? nodes.eaten : nodes.sprite!;
+        if (desired !== nodes.current) {
+            ghostLayer.removeChild(nodes.current);
+            ghostLayer.addChild(desired);
+            nodes.current = desired;
+        }
+
+        if (wantEaten) {
+            drawGhost(nodes.eaten, 0x444444, true);
+        } else {
+            // Tint deep purple when scared; otherwise show the sprite as-is.
+            nodes.sprite!.tint = u.State === 1 ? SCARED_COLOR : 0xffffff;
+        }
+        placeAtTile(nodes.current, u.X, u.Y);
     });
 }
 
-const LEPARD_GOLD = 0xd4a017;
-const LEPARD_SPOT = 0x3b2412;
-
-function drawPlayer(g: Graphics, mouthOpen: boolean, angle: number) {
-    g.clear();
-    const r = TILE / 2 - 2;
-    if (mouthOpen) {
-        const mouthAngle = Math.PI / 5;
-        g.moveTo(0, 0);
-        g.arc(0, 0, r, angle + mouthAngle, angle + Math.PI * 2 - mouthAngle);
-        g.lineTo(0, 0);
-        g.fill(LEPARD_GOLD);
-    } else {
-        g.circle(0, 0, r).fill(LEPARD_GOLD);
-    }
-    // Leopard spots — small dark rosettes scattered on the body
-    const spots: Array<[number, number, number]> = [
-        [-r * 0.45, -r * 0.10, 1.6],
-        [-r * 0.10,  r * 0.40, 1.4],
-        [ r * 0.35,  r * 0.20, 1.5],
-        [-r * 0.30,  r * 0.55, 1.2],
-    ];
-    for (const [sx, sy, sr] of spots) {
-        g.circle(sx, sy, sr).fill(LEPARD_SPOT);
-    }
-    // Eye
-    const eyeX = Math.cos(angle - Math.PI / 4) * (r * 0.5);
-    const eyeY = Math.sin(angle - Math.PI / 4) * (r * 0.5);
-    g.circle(eyeX, eyeY, 2).fill(0x000000);
-}
-
-// --- Draw ghost shape ---
+// --- Draw ghost shape (used only for the "eaten" eyes-only fallback) ---
 function drawGhost(g: Graphics, color: number, eaten: boolean) {
     g.clear();
     if (eaten) {
@@ -298,9 +305,9 @@ function isPowerPellet(x: number, y: number): boolean {
     return POWER_PELLETS.some(([px, py]) => px === x && py === y);
 }
 
-function placeAtTile(g: Graphics, x: number, y: number) {
-    g.x = x * TILE + TILE / 2;
-    g.y = y * TILE + TILE / 2;
+function placeAtTile(node: Container, x: number, y: number) {
+    node.x = x * TILE + TILE / 2;
+    node.y = y * TILE + TILE / 2;
 }
 
 function drawMaze(stage: Container) {
