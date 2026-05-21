@@ -16,6 +16,8 @@ type Ghost struct {
 
 	updateCh  chan<- GhostUpdate  // Send position/state to game
 	commandCh <-chan GhostCommand // Receive commands from game
+
+	lua *LuaManager // may be nil; falls back to built-in AI
 }
 
 // Direction and State enums
@@ -88,12 +90,15 @@ func (g *Ghost) move() {
 		return
 	}
 
-	// Very basic "AI" - chase or random
 	switch g.State {
 	case Scared:
-		g.randomMove()
+		if !g.luaMove("scared") {
+			g.randomMove()
+		}
 	case Normal:
-		g.chaseMove() // Simplified
+		if !g.luaMove("normal") {
+			g.chaseMove()
+		}
 	default:
 		g.randomMove()
 	}
@@ -107,6 +112,45 @@ func (g *Ghost) canEnter(x, y int) bool {
 		return x >= 0 && y >= 0 && x < mazeCols && y < mazeRows
 	}
 	return !isWall(x, y)
+}
+
+// luaMove asks the Lua script for a direction and applies it if the tile is
+// reachable. Returns true if Lua handled the move, false to fall back to Go AI.
+func (g *Ghost) luaMove(scriptKey string) bool {
+	if g.lua == nil {
+		return false
+	}
+	dir, ok := g.lua.RunThink(scriptKey, g.ID, g.X, g.Y, int(g.State), 0)
+	if !ok {
+		return false
+	}
+	nx, ny := g.X, g.Y
+	switch dir {
+	case "up":
+		ny--
+	case "down":
+		ny++
+	case "left":
+		nx--
+	case "right":
+		nx++
+	default:
+		return true // "none" or unknown: Lua handled it, ghost just stays put
+	}
+	if g.canEnter(nx, ny) {
+		g.X, g.Y = nx, ny
+		switch dir {
+		case "up":
+			g.Dir = Up
+		case "down":
+			g.Dir = Down
+		case "left":
+			g.Dir = Left
+		case "right":
+			g.Dir = Right
+		}
+	}
+	return true
 }
 
 func (g *Ghost) chaseMove() {
