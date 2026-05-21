@@ -149,8 +149,10 @@ func (g *Ghost) luaMove(scriptKey string) bool {
 		case "right":
 			g.Dir = Right
 		}
+		return true
 	}
-	return true
+	// Lua picked a walled tile — let Go's random fallback handle it.
+	return false
 }
 
 func (g *Ghost) chaseMove() {

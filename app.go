@@ -94,6 +94,8 @@ func NewGameEngine() *GameEngine {
 		fmt.Println("warning:", err)
 	}
 
+	lm.WatchScripts("scripts")
+
 	return &GameEngine{
 		updateCh:  make(chan GhostUpdate, 32),
 		ghosts:    make(map[string]*Ghost),
